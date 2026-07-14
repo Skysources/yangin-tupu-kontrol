@@ -10,34 +10,120 @@
 <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
 <style>
   html, body { margin: 0; padding: 0; }
+  #fb-status {
+    position: fixed; inset: 0; z-index: 999; display: flex; align-items: center; justify-content: center;
+    background: #EEF1F6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #6E6E73; font-size: 14px; flex-direction: column; gap: 10px;
+  }
+  #fb-status.hidden { display: none; }
+  #fb-status .dot {
+    width: 10px; height: 10px; border-radius: 50%; background: #0071E3;
+    animation: fbPulse 1s ease-in-out infinite;
+  }
+  @keyframes fbPulse { 0%,100% { opacity: .3; } 50% { opacity: 1; } }
 </style>
 </head>
 <body>
+<div id="fb-status"><div class="dot"></div>Bağlanılıyor…</div>
 <div id="root"></div>
 
 <script>
-// ── Tarayıcı içi kalıcı depo (localStorage) — window.storage API'sini taklit eder ──
+// ── window.storage köprüsü: React tarafı bunu çağırır, gerçek iş modül script'inde
+//    Firebase/Firestore üzerinden yapılır. Firebase hazır olana kadar çağrılar bekler. ──
+window.__firebaseReady = new Promise((resolve) => { window.__resolveFirebaseReady = resolve; });
+window.__firebaseError = null;
+
 window.storage = {
   async get(key, shared) {
-    try {
-      const raw = localStorage.getItem(key);
-      if (raw === null) return null;
-      return { key, value: raw, shared: !!shared };
-    } catch (e) { return null; }
+    await window.__firebaseReady;
+    if (window.__firebaseError) throw window.__firebaseError;
+    try { return await window.__fsOps.get(key); }
+    catch (e) { console.error("storage.get hata:", e); return null; }
   },
   async set(key, value, shared) {
-    localStorage.setItem(key, value);
-    return { key, value, shared: !!shared };
+    await window.__firebaseReady;
+    if (window.__firebaseError) throw window.__firebaseError;
+    return await window.__fsOps.set(key, value);
   },
   async delete(key, shared) {
-    localStorage.removeItem(key);
-    return { key, deleted: true, shared: !!shared };
+    await window.__firebaseReady;
+    if (window.__firebaseError) throw window.__firebaseError;
+    return await window.__fsOps.delete(key);
   },
   async list(prefix, shared) {
-    const keys = Object.keys(localStorage).filter((k) => !prefix || k.startsWith(prefix));
-    return { keys, prefix, shared: !!shared };
+    await window.__firebaseReady;
+    if (window.__firebaseError) throw window.__firebaseError;
+    try { return await window.__fsOps.list(prefix); }
+    catch (e) { console.error("storage.list hata:", e); return { keys: [] }; }
   },
 };
+</script>
+
+<script type="module">
+// ── Firebase kurulumu — sadece tek seferlik oku/yaz (realtime dinleyici YOK),
+//    bu yüzden ücretsiz kotayı asla zorlamaz. ──
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
+import {
+  getFirestore, doc, getDoc, setDoc, deleteDoc,
+  collection, query, where, documentId, getDocs, serverTimestamp,
+} from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyA6Xsvn0FJHjeiQHFEwkcAA2EaeCx-wlOU",
+  authDomain: "yangin-tupu-kontrol.firebaseapp.com",
+  projectId: "yangin-tupu-kontrol",
+  storageBucket: "yangin-tupu-kontrol.firebasestorage.app",
+  messagingSenderId: "831678308096",
+  appId: "1:831678308096:web:7ffaa7e2b432889da4dde5",
+};
+
+const COL = "app_data";
+
+try {
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  await new Promise((resolve, reject) => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (user) { unsub(); resolve(); }
+    }, reject);
+    signInAnonymously(auth).catch(reject);
+  });
+
+  window.__fsOps = {
+    async get(key) {
+      const snap = await getDoc(doc(db, COL, key));
+      if (!snap.exists()) return null;
+      return { key, value: snap.data().value };
+    },
+    async set(key, value) {
+      await setDoc(doc(db, COL, key), { value, updatedAt: serverTimestamp() });
+      return { key, value };
+    },
+    async delete(key) {
+      await deleteDoc(doc(db, COL, key));
+      return { key, deleted: true };
+    },
+    async list(prefix) {
+      const colRef = collection(db, COL);
+      const q = prefix
+        ? query(colRef, where(documentId(), ">=", prefix), where(documentId(), "<", prefix + "\uf8ff"))
+        : query(colRef);
+      const snaps = await getDocs(q);
+      const keys = [];
+      snaps.forEach((d) => keys.push(d.id));
+      return { keys };
+    },
+  };
+} catch (e) {
+  console.error("Firebase başlatma hatası:", e);
+  window.__firebaseError = e;
+}
+
+document.getElementById("fb-status").classList.add("hidden");
+window.__resolveFirebaseReady();
 </script>
 
 <script type="text/babel" data-presets="react">
