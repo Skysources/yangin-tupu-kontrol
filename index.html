@@ -8,6 +8,9 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
 <style>
   html, body { margin: 0; padding: 0; }
   #fb-status {
@@ -59,12 +62,15 @@ window.storage = {
 };
 </script>
 
-<script type="module">
+<script>
 // ── Firebase kurulumu — sadece tek seferlik oku/yaz (realtime dinleyici YOK),
-//    bu yüzden ücretsiz kotayı asla zorlamaz. Dinamik import + try/catch/finally
-//    ve bir zaman aşımı kullanılıyor: Firebase hiçbir sebeple yüklenemezse bile
-//    "Bağlanılıyor…" ekranı sonsuza dek takılı kalmaz, arayüz açılır. ──
-const FB_VERSION = "10.13.2";
+//    bu yüzden ücretsiz kotayı asla zorlamaz. Modül (type="module" / import)
+//    yerine bilerek klasik script + Firebase compat SDK kullanılıyor: bazı
+//    tarayıcı uzantıları/güvenlik yazılımları sayfaya eklenen script
+//    etiketlerini yeniden yazarken "type=module" özelliğini kaybettirip
+//    "Cannot use import statement outside a module" hatası verdirebiliyor.
+//    try/catch/finally + zaman aşımı: Firebase hiçbir sebeple yüklenemezse
+//    bile "Bağlanılıyor…" ekranı sonsuza dek takılı kalmaz, arayüz açılır. ──
 const firebaseConfig = {
   apiKey: "AIzaSyA6Xsvn0FJHjeiQHFEwkcAA2EaeCx-wlOU",
   authDomain: "yangin-tupu-kontrol.firebaseapp.com",
@@ -92,47 +98,39 @@ const hardTimeout = setTimeout(() => {
 
 (async () => {
   try {
-    const [{ initializeApp }, { getAuth, signInAnonymously, onAuthStateChanged }, fs] = await Promise.all([
-      import(`https://www.gstatic.com/firebasejs/${FB_VERSION}/firebase-app.js`),
-      import(`https://www.gstatic.com/firebasejs/${FB_VERSION}/firebase-auth.js`),
-      import(`https://www.gstatic.com/firebasejs/${FB_VERSION}/firebase-firestore.js`),
-    ]);
-    const {
-      getFirestore, doc, getDoc, setDoc, deleteDoc,
-      collection, query, where, documentId, getDocs, serverTimestamp,
-    } = fs;
-
-    const app = initializeApp(firebaseConfig);
-    const auth = getAuth(app);
-    const db = getFirestore(app);
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
 
     await new Promise((resolve, reject) => {
-      const unsub = onAuthStateChanged(auth, (user) => {
+      const unsub = auth.onAuthStateChanged((user) => {
         if (user) { unsub(); resolve(); }
       }, reject);
-      signInAnonymously(auth).catch(reject);
+      auth.signInAnonymously().catch(reject);
     });
 
     window.__fsOps = {
       async get(key) {
-        const snap = await getDoc(doc(db, COL, key));
-        if (!snap.exists()) return null;
+        const snap = await db.collection(COL).doc(key).get();
+        if (!snap.exists) return null;
         return { key, value: snap.data().value };
       },
       async set(key, value) {
-        await setDoc(doc(db, COL, key), { value, updatedAt: serverTimestamp() });
+        await db.collection(COL).doc(key).set({ value, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
         return { key, value };
       },
       async delete(key) {
-        await deleteDoc(doc(db, COL, key));
+        await db.collection(COL).doc(key).delete();
         return { key, deleted: true };
       },
       async list(prefix) {
-        const colRef = collection(db, COL);
+        const colRef = db.collection(COL);
         const q = prefix
-          ? query(colRef, where(documentId(), ">=", prefix), where(documentId(), "<", prefix + "\uf8ff"))
-          : query(colRef);
-        const snaps = await getDocs(q);
+          ? colRef
+              .where(firebase.firestore.FieldPath.documentId(), ">=", prefix)
+              .where(firebase.firestore.FieldPath.documentId(), "<", prefix + "\uf8ff")
+          : colRef;
+        const snaps = await q.get();
         const keys = [];
         snaps.forEach((d) => keys.push(d.id));
         return { keys };
