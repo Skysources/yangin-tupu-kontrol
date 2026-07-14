@@ -61,14 +61,10 @@ window.storage = {
 
 <script type="module">
 // ── Firebase kurulumu — sadece tek seferlik oku/yaz (realtime dinleyici YOK),
-//    bu yüzden ücretsiz kotayı asla zorlamaz. ──
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
-import {
-  getFirestore, doc, getDoc, setDoc, deleteDoc,
-  collection, query, where, documentId, getDocs, serverTimestamp,
-} from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
-
+//    bu yüzden ücretsiz kotayı asla zorlamaz. Dinamik import + try/catch/finally
+//    ve bir zaman aşımı kullanılıyor: Firebase hiçbir sebeple yüklenemezse bile
+//    "Bağlanılıyor…" ekranı sonsuza dek takılı kalmaz, arayüz açılır. ──
+const FB_VERSION = "10.13.2";
 const firebaseConfig = {
   apiKey: "AIzaSyA6Xsvn0FJHjeiQHFEwkcAA2EaeCx-wlOU",
   authDomain: "yangin-tupu-kontrol.firebaseapp.com",
@@ -77,53 +73,79 @@ const firebaseConfig = {
   messagingSenderId: "831678308096",
   appId: "1:831678308096:web:7ffaa7e2b432889da4dde5",
 };
-
 const COL = "app_data";
 
-try {
-  const app = initializeApp(firebaseConfig);
-  const auth = getAuth(app);
-  const db = getFirestore(app);
-
-  await new Promise((resolve, reject) => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      if (user) { unsub(); resolve(); }
-    }, reject);
-    signInAnonymously(auth).catch(reject);
-  });
-
-  window.__fsOps = {
-    async get(key) {
-      const snap = await getDoc(doc(db, COL, key));
-      if (!snap.exists()) return null;
-      return { key, value: snap.data().value };
-    },
-    async set(key, value) {
-      await setDoc(doc(db, COL, key), { value, updatedAt: serverTimestamp() });
-      return { key, value };
-    },
-    async delete(key) {
-      await deleteDoc(doc(db, COL, key));
-      return { key, deleted: true };
-    },
-    async list(prefix) {
-      const colRef = collection(db, COL);
-      const q = prefix
-        ? query(colRef, where(documentId(), ">=", prefix), where(documentId(), "<", prefix + "\uf8ff"))
-        : query(colRef);
-      const snaps = await getDocs(q);
-      const keys = [];
-      snaps.forEach((d) => keys.push(d.id));
-      return { keys };
-    },
-  };
-} catch (e) {
-  console.error("Firebase başlatma hatası:", e);
-  window.__firebaseError = e;
+function finishUp() {
+  const el = document.getElementById("fb-status");
+  if (el) el.classList.add("hidden");
+  if (window.__resolveFirebaseReady) { window.__resolveFirebaseReady(); window.__resolveFirebaseReady = null; }
 }
 
-document.getElementById("fb-status").classList.add("hidden");
-window.__resolveFirebaseReady();
+// 8 saniye içinde bir sonuç çıkmazsa (yavaş ağ, engellenen istek vb.) zorla devam et.
+const hardTimeout = setTimeout(() => {
+  if (!window.__fsOps) {
+    console.warn("Firebase zaman aşımına uğradı, çevrimdışı modda devam ediliyor.");
+    window.__firebaseError = window.__firebaseError || new Error("Firebase zaman aşımı");
+  }
+  finishUp();
+}, 8000);
+
+(async () => {
+  try {
+    const [{ initializeApp }, { getAuth, signInAnonymously, onAuthStateChanged }, fs] = await Promise.all([
+      import(`https://www.gstatic.com/firebasejs/${FB_VERSION}/firebase-app.js`),
+      import(`https://www.gstatic.com/firebasejs/${FB_VERSION}/firebase-auth.js`),
+      import(`https://www.gstatic.com/firebasejs/${FB_VERSION}/firebase-firestore.js`),
+    ]);
+    const {
+      getFirestore, doc, getDoc, setDoc, deleteDoc,
+      collection, query, where, documentId, getDocs, serverTimestamp,
+    } = fs;
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    await new Promise((resolve, reject) => {
+      const unsub = onAuthStateChanged(auth, (user) => {
+        if (user) { unsub(); resolve(); }
+      }, reject);
+      signInAnonymously(auth).catch(reject);
+    });
+
+    window.__fsOps = {
+      async get(key) {
+        const snap = await getDoc(doc(db, COL, key));
+        if (!snap.exists()) return null;
+        return { key, value: snap.data().value };
+      },
+      async set(key, value) {
+        await setDoc(doc(db, COL, key), { value, updatedAt: serverTimestamp() });
+        return { key, value };
+      },
+      async delete(key) {
+        await deleteDoc(doc(db, COL, key));
+        return { key, deleted: true };
+      },
+      async list(prefix) {
+        const colRef = collection(db, COL);
+        const q = prefix
+          ? query(colRef, where(documentId(), ">=", prefix), where(documentId(), "<", prefix + "\uf8ff"))
+          : query(colRef);
+        const snaps = await getDocs(q);
+        const keys = [];
+        snaps.forEach((d) => keys.push(d.id));
+        return { keys };
+      },
+    };
+  } catch (e) {
+    console.error("Firebase başlatma hatası:", e);
+    window.__firebaseError = e;
+  } finally {
+    clearTimeout(hardTimeout);
+    finishUp();
+  }
+})();
 </script>
 
 <script type="text/babel" data-presets="react">
